@@ -1,0 +1,161 @@
+-- Problem 1
+SELECT skills_dim.skills
+FROM skills_dim
+INNER JOIN (
+    SELECT 
+        skill_id,
+        COUNT(job_id) AS skill_count
+    FROM skills_job_dim
+    GROUP BY skill_id
+    ORDER BY COUNT(job_id) DESC
+    LIMIT 5
+) AS top_skills ON skills_dim.skill_id = top_skills.skill_id
+ORDER BY top_skills.skill_count DESC;
+
+-- Problem 2
+SELECT
+   company_id,
+   name,
+   -- Categorize companies
+   CASE
+       WHEN job_count < 10 THEN 'Small'
+       WHEN job_count BETWEEN 10 AND 50 THEN 'Medium'
+       ELSE 'Large'
+   END AS company_size
+FROM (
+   -- Subquery to calculate number of job postings per company 
+   SELECT
+       company_dim.company_id,
+       company_dim.name,
+       COUNT(job_postings_fact.job_id) AS job_count
+   FROM company_dim
+   INNER JOIN job_postings_fact 
+       ON company_dim.company_id = job_postings_fact.company_id
+   GROUP BY
+       company_dim.company_id,
+       company_dim.name
+) AS company_job_count;
+
+-- Problem 3
+SELECT 
+    company_dim.name -- Final output: we only want the company name
+FROM company_dim -- Start from the company table (has names + company_id)
+INNER JOIN ( -- Join company names to a “temporary table” we build below
+-- Subquery: calc avg salary/company (one row per company_id)
+    SELECT 
+        company_id, -- Keep company_id so we can join back to company_dim
+        AVG(salary_year_avg) AS avg_salary  -- Compute each company’s average posted salary
+    FROM 
+        job_postings_fact -- Salaries live here (job-level table)
+    GROUP BY company_id -- Group so we get 1 result row per company
+) AS company_salaries -- Give the subquery result a name (acts like a table)
+ON company_dim.company_id = company_salaries.company_id
+ -- Match each company name to its computed avg_salary using company_id
+WHERE 
+    company_salaries.avg_salary > (  -- Keep only companies whose avg salary is above overall avg
+-- Subquery: calculate the single overall average salary across all job postings
+        SELECT 
+            AVG(salary_year_avg)
+        FROM 
+            job_postings_fact -- Same table, but no GROUP BY → returns ONE number
+    );
+
+-- Problem 1 (CTE's)
+WITH Distinct_counter AS (
+	  SELECT
+        company_id,
+        COUNT(DISTINCT job_title) AS unique_titles
+	  FROM job_postings_fact
+      GROUP BY company_id
+)
+
+SELECT
+    company_dim.name as company_name, 
+	Distinct_counter.unique_titles
+FROM company_dim
+LEFT JOIN Distinct_counter ON company_dim.company_id = Distinct_counter.company_id
+ORDER BY
+    unique_titles DESC
+LIMIT 10;
+
+-- Problem 2
+-- gets average job salary for each country
+WITH avg_salaries AS (
+    SELECT 
+        job_country, 
+        AVG(salary_year_avg) AS avg_salary
+    FROM job_postings_fact
+    GROUP BY job_country
+)
+SELECT
+    -- Gets basic job info
+    job_postings.job_id,
+    job_postings.job_title,
+    companies.name AS company_name,
+    job_postings.salary_year_avg AS salary_rate,
+    -- categorizes the salary as above or below average the average salary for the country
+    CASE
+        WHEN job_postings.salary_year_avg > avg_salaries.avg_salary
+        THEN 'Above Average'
+        ELSE 'Below Average'
+    END AS salary_category,
+    -- gets the month and year of the job posting date
+    EXTRACT(MONTH FROM job_postings.job_posted_date) AS posting_month
+FROM
+    job_postings_fact as job_postings
+INNER JOIN
+    company_dim as companies ON job_postings.company_id = companies.company_id
+INNER JOIN
+    avg_salaries ON job_postings.job_country = avg_salaries.job_country
+ORDER BY
+    -- Sorts it by the most recent job postings
+    posting_month desc
+
+-- Problem 3
+-- count the distinct skill_id for each company.
+WITH  required_skills AS (
+    SELECT
+        company_dim.company_id, 
+        COUNT(DISTINCT skills_job_dim.skill_id) AS unique_skills_required
+
+/* We have the company name on company_dim, we want to get the
+Distinct Skills so we have to join to a table with skill_id,
+Therefore join first on company_id, and then on skill_id
+*/
+    FROM company_dim
+    LEFT JOIN job_postings_fact
+    ON company_dim.company_id = job_postings_fact.company_id
+-- connect on skill_id
+    LEFT JOIN skills_job_dim
+    ON job_postings_fact.job_id = skills_job_dim.job_id
+    GROUP BY
+        company_dim.company_id
+),
+-- Highest AVG yr salary from jobs that require at least one skills 
+max_salary AS (
+    SELECT
+        job_postings_fact.company_id,
+        MAX(job_postings_fact.salary_year_avg) AS highest_average_salary
+    FROM
+        job_postings_fact
+/*
+Only get jobs that require at least one skill by filtering out 
+job postings that have an associated skill in the 
+skills_job_dim table 
+*/
+    WHERE
+        job_postings_fact.job_id IN (SELECT job_id FROM skills_job_dim)
+    GROUP BY
+        job_postings_fact.company_id
+)
+
+--Joins 2 CTEs with table to get the query
+SELECT
+    company_dim.name,
+    required_skills.unique_skills_required as unique_skills_required, --handle companies w/o any skills required
+    max_salary.highest_average_salary
+FROM company_dim
+LEFT JOIN required_skills ON company_dim.company_id = required_skills.company_id
+LEFT JOIN max_salary ON company_dim.company_id = max_salary.company_id
+ORDER BY
+    company_dim.name;
